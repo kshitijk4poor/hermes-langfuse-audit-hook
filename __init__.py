@@ -88,6 +88,60 @@ def _extract_tool_args_summary(tool_name: str, args: Any) -> str | None:
     return None
 
 
+# Leading shell tokens that carry no signal about what the command does.
+# `cd` overwhelmingly appears as the first segment of a compound command
+# (`cd /path && gh ...`), so a naive first-token prefix reports `cd` for
+# essentially every terminal call and the finding becomes noise.
+# `_DROP_ARG_TOKENS` consume the token AND its argument (e.g. `cd <dir>`,
+# `source <file>`); `_SEGMENT_NOISE_TOKENS` mark a whole simple-command
+# segment as noise (the builtin consumes the rest of the segment as args,
+# e.g. `set -euo pipefail`, `export PATH=...`).
+_DROP_ARG_TOKENS = {"cd", "pushd", "source", "."}
+_SEGMENT_NOISE_TOKENS = {"builtin", "command", "export", "set"}
+
+
+def _meaningful_command_prefix(cmd: str, max_len: int = 40) -> str:
+    """Return the meaningful head token of a (possibly compound) shell command.
+
+    Strips leading `cd <dir> &&` style prologues, shell variable assignments
+    (`FOO=bar cmd`), `export`/`set`/`source` noise, and leading comment
+    lines, then returns the first remaining token (truncated). Falls back
+    to "" for noise-only commands (e.g. a bare `cd`) so they are dropped
+    from the pattern counter.
+    """
+    if not isinstance(cmd, str):
+        return ""
+    # Skip comment lines / blank lines entirely.
+    lines = [ln.strip() for ln in cmd.strip().splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    if not lines:
+        return ""
+    # Walk segments in order; each segment is one simple command.
+    for ln in lines:
+        for segment in re.split(r"&&|;", ln):
+            tokens = segment.split()
+            if not tokens:
+                continue
+            head = tokens[0]
+            if head in _SEGMENT_NOISE_TOKENS:
+                # `set -euo pipefail`, `export PATH=...` — the builtin
+                # consumes the rest of the segment as its arguments.
+                continue
+            while tokens:
+                head = tokens.pop(0)
+                if head in _DROP_ARG_TOKENS:
+                    # Drop the token AND its argument (e.g. `cd <dir>`).
+                    if tokens:
+                        tokens.pop(0)
+                    continue
+                if head in ("&&", ";"):
+                    continue
+                if "=" in head and not head.startswith("-") and head.split("=")[0].replace("_", "").isalnum():
+                    # Environment assignment prefix (`FOO=bar cmd`).
+                    continue
+                return head[:max_len]
+    return ""
+
+
 # ── State management ─────────────────────────────────────────────────────────
 
 def _ensure_state() -> dict[str, Any]:
@@ -251,11 +305,16 @@ def _analyze_window(window: list[dict[str, Any]]) -> tuple[list[str], dict[str, 
 
     # 4. Terminal command patterns — detect repeated similar commands
     if len(command_patterns) >= 3:
-        # Look for commands that share a common prefix (e.g. "grep" repeated)
+        # Look for commands that share a common prefix (e.g. "grep" repeated).
+        # Agents overwhelmingly run compound shell (`cd /path && gh ...`), so
+        # taking the first whitespace token yields the useless prefix `cd`
+        # almost every time. Strip leading `cd <dir> &&` / env prefixes first
+        # so the reported prefix is the meaningful head of the command.
         cmd_prefixes: Counter[str] = Counter()
         for cmd in command_patterns:
-            prefix = cmd.split()[0] if cmd.split() else cmd
-            cmd_prefixes[prefix] += 1
+            prefix = _meaningful_command_prefix(cmd)
+            if prefix:
+                cmd_prefixes[prefix] += 1
         repeated_cmds = [(p, c) for p, c in cmd_prefixes.items() if c >= 3]
         if repeated_cmds:
             findings.append("**Repeated terminal command patterns** (consider combining with `&&` or `execute_code`):")
