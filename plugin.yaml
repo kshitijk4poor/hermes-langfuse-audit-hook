@@ -1,0 +1,8 @@
+name: langfuse_audit_hook
+version: "0.2.0"
+description: Analyzes Hermes tool usage patterns every 10 turns — detects errors, wasted calls, repetition, and context bloat. Appends actionable findings to optimizations.md.
+author: kshitijk4poor
+provides_hooks:
+  - post_api_request
+  - post_tool_call
+  - post_llm_call
