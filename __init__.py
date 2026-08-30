@@ -133,8 +133,6 @@ def _meaningful_command_prefix(cmd: str, max_len: int = 40) -> str:
                     if tokens:
                         tokens.pop(0)
                     continue
-                if head in ("&&", ";"):
-                    continue
                 if "=" in head and not head.startswith("-") and head.split("=")[0].replace("_", "").isalnum():
                     # Environment assignment prefix (`FOO=bar cmd`).
                     continue
